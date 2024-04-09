@@ -1,0 +1,107 @@
+# [深入解析 TensorFlow 2.0 儲存與載入模型的各種方法](https://medium.com/@shihaoticking/%E6%B7%B1%E5%85%A5%E8%A7%A3%E6%9E%90-tensorflow-2-0-%E5%84%B2%E5%AD%98%E8%88%87%E8%BC%89%E5%85%A5%E6%A8%A1%E5%9E%8B%E7%9A%84%E5%90%84%E7%A8%AE%E6%96%B9%E6%B3%95-274ea83b99b9)
+
+# 存取模型參數是資料科學工作者的基本功
+# 1. 用 Keras 儲存 HDF5 檔案格式的模型
+# 2. 以 TensorFlow SavedModel 格式儲存模型
+# 3. 讀取模型
+# numpy 1.24以上版本與tensorflow不相容，要降版
+pip install numpy==1.23.4
+
+# 載入模組
+import numpy as np
+import matplotlib.pyplot as plt
+# import tensorflow_datasets as tfds 此部分又遇到無法相容問題，故將mnist直接用tf內資料取代
+import tensorflow as tf
+
+from tensorflow.keras import layers
+
+# 載入資料集
+# 下载并加载 MNIST 数据集
+mnist = tf.keras.datasets.mnist
+(train_images, train_labels), (test_images, test_labels) = mnist.load_data()
+
+# 需要使用 tf.data.Dataset 来处理数据，手动将数据转换为 Dataset 对象
+train = tf.data.Dataset.from_tensor_slices((train_images, train_labels))
+test = tf.data.Dataset.from_tensor_slices((test_images, test_labels))
+
+# 資料前處理
+def format_image(image, label):
+  image = tf.cast(image, dtype=tf.float32)  # 資料型態轉換 float32
+  image = image / 255.0                     # 正規劃數值到 [0, 1] 區間
+  return  image, label
+
+BATCH_SIZE = 32
+BUFFER_SIZE = 10000
+
+train_batches = train.cache().shuffle(BUFFER_SIZE).map(format_image).batch(BATCH_SIZE).prefetch(1)
+test_batches = test.cache().map(format_image).batch(BATCH_SIZE).prefetch(1)
+
+# 适用于 TensorSliceDataset 的模型
+model = tf.keras.Sequential([
+  layers.Reshape((28, 28, 1), input_shape=(28, 28)),
+  layers.Conv2D(16, kernel_size=(3, 3), activation='relu'),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Flatten(),
+  layers.Dense(512, activation='relu'),
+  layers.Dense(10, activation='softmax')
+])
+
+# 适用于 PrefetchDataset 的模型
+model = tf.keras.Sequential([
+  layers.Conv2D(16, kernel_size=(3, 3), activation='relu', input_shape=(28, 28, 1)),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+  layers.MaxPool2D(pool_size=(2, 2)),
+  layers.Flatten(),
+  layers.Dense(512, activation='relu'),
+  layers.Dense(10, activation='softmax')
+])
+
+model.compile(
+  optimizer='adam', 
+  loss='sparse_categorical_crossentropy', 
+  metrics=['accuracy']
+)
+
+# 訓練模型
+EPOCH = 3
+history = model.fit(
+  train_batches, 
+  validation_data=test_batches, 
+  epochs=EPOCH
+)
+
+#確認模型預測結果
+image_batch, label_batch = next(iter(train_batches.take(1)))  # 取 1 批資料
+image_batch = image_batch.numpy()  # 轉成 numpy.ndarray 格式
+label_batch = label_batch.numpy()  # 轉成 numpy.ndarray 格式
+predicted_batch = model.predict(image_batch)  # 預測
+predicted_batch = tf.squeeze(predicted_batch).numpy()  # 壓縮維度 (1, 32, 10) -> (32, 10)
+predicted_ids = np.argmax(predicted_batch, axis=-1)  # 取出機率最大的 index
+print("Labels: ", label_batch)  # 印出原始 label
+print("Predicted labels: ", predicted_ids)  # 印出預測 label 與原始 label 比較
+accuracy = np.mean(predicted_ids == label_batch)
+print("Accuracy: ", accuracy)
+
+
+# 儲存模型 - Keras HDF5 格式
+model.save('./keras_model.h5')
+
+# 讀取 .h5 模型檔
+reload_model = tf.keras.models.load_model('./keras_model.h5')
+reload_model.summary()
+
+
+# 檢查再載入模型與原本的模型異同
+result_batch = model.predict(image_batch)  # 原本的模型預測
+reload_result_batch = reload_model.predict(image_batch)  # 載入的模型預測
+
+# 將兩個預測結果相減取絕對值，如果完全相同，則每一項都是0
+print((abs(result_batch - reload_result_batch)).max()) 
+
